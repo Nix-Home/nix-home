@@ -24,6 +24,8 @@
             openssl
             pkg-config
             pixiecore
+            nixos-rebuild
+            nixos-anywhere
 
             (rust-bin.stable.latest.default.override {
               extensions = [
@@ -56,7 +58,7 @@
               mkdir -p $out/bin
               cp ${package}/bin/cli $out/bin/nhome
               wrapProgram $out/bin/nhome \
-                --prefix PATH : ${pkgs.nix}/bin:${pkgs.nixos-rebuild}/bin:${pkgs.openssh}/bin:${pkgs.pixiecore}/bin:{}
+                --prefix PATH : ${pkgs.nix}/bin:${pkgs.nixos-rebuild}/bin:${pkgs.openssh}/bin:${pkgs.pixiecore}/bin:${pkgs.nixos-anywhere}/bin:{}
 	    '';
       }
     );

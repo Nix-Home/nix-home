@@ -1,9 +1,11 @@
 use std::{
+    ffi::OsString,
+    os::unix::ffi::OsStringExt as _,
     path::{Path, PathBuf},
     process::Stdio,
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use arguments::Operation;
 use regex::Regex;
 use tokio::process::Command;
@@ -54,7 +56,6 @@ pub struct ProjectContext {
     host_filter: Regex,
     ssh_config_path: String,
     project_root: PathBuf,
-    output_directory: PathBuf,
 }
 
 impl ProjectContext {
@@ -129,7 +130,6 @@ impl ProjectContext {
             host_filter,
             ssh_config_path,
             project_root,
-            output_directory,
         })
     }
 
@@ -165,7 +165,6 @@ impl ProjectContext {
                 .context("`nix eval` output is not utf8 encoded text")?;
             output.retain(|c| c.is_alphabetic());
 
-            dbg!(&output);
             let value: bool = output
                 .parse()
                 .context("Failed to parse output of `nix eval`")?;
@@ -295,32 +294,37 @@ impl ProjectContext {
         command.arg("--builders");
         command.arg(build_machine_list);
 
-        // Configure output path.
-        let output_directory = self.output_directory.join(host);
-
         // Our action.
         command.arg("build");
 
-        command.arg("--out-link");
-        command.arg(output_directory.clone());
+        command.arg("--no-link");
+        command.arg("--print-out-paths");
 
         // Specify which output to build.
         command.arg(target);
 
-        let mut child = command
-            .stdout(Stdio::inherit())
+        let child = command
+            .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
             .context("Failed to spawn nix build.")?;
 
         let result = child
-            .wait()
+            .wait_with_output()
             .await
             .context("Failed to wait for nix-build to complete.")?;
 
-        if !result.success() {
+        if !result.status.success() {
             bail!("`nix build` returned non-zero output.");
         } else {
+            let output_directory = OsString::from_vec(result.stdout);
+            let output_directory = output_directory
+                .into_string()
+                .map_err(|_original| anyhow!("Path output of build was not UTF8 encoded"))?;
+            let output_directory = output_directory.replace("\n", ""); // Remove the newline at the end of the stream.
+            let output_directory = PathBuf::from(output_directory);
+            log::info!("Output of build located at: {output_directory:?}");
+
             Ok(output_directory)
         }
     }
