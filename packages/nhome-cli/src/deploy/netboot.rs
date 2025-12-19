@@ -1,88 +1,95 @@
-use std::{path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 
 use crate::{arguments, ProjectContext};
 use anyhow::{Context, Result};
-use tokio::process::{Child, Command};
+use tokio::{
+    io::{AsyncBufReadExt as _, BufReader},
+    process::{Child, Command},
+};
 
-async fn run_pixiecore(context: &ProjectContext, host: &str) -> Result<Child> {
-    let output_directory = context
-        .run_build(
-            host,
-            &format!(".#nixosConfigurations.{host}.config.system.build.installer_netboot"),
-        )
-        .await?
-        .canonicalize()
-        .context("Failed to canonicalize path to PXE boot dependencies")?;
-
+async fn run_pixiecore(output_directory: &Path) -> Result<Child> {
     let kernel = output_directory
         .join("kernel/bzImage")
         .canonicalize()
-        .context("Failed to canonacalize kernel path.")?;
+        .context("Failed to canonacalize kernel path.")?
+        .to_string_lossy()
+        .to_string();
     let initrd = output_directory
         .join("netbootRamdisk/initrd")
         .canonicalize()
-        .context("Failed to canonicalize initrd path")?;
+        .context("Failed to canonicalize initrd path")?
+        .to_string_lossy()
+        .to_string();
     let root_filesystem = output_directory
         .join("toplevel/init")
         .canonicalize()
-        .context("Failed to canonicalize path to root filesystem")?;
+        .context("Failed to canonicalize path to root filesystem")?
+        .to_string_lossy()
+        .to_string();
+
+    let sh_input =
+        format!("printf 'PIXIECORE START\\n' >&2; pixiecore boot {kernel} {initrd} --cmdline 'init={root_filesystem} loglevel=4' --debug --dhcp-no-bind --port 64172 --status-port 64172");
 
     let mut command = Command::new("sudo");
-    command.arg("pixiecore");
-    command.arg("boot");
-    command.arg(kernel);
-    command.arg(initrd);
-    command.arg("--cmdline");
-    command.arg(format!(
-        "init={} loglevel=4",
-        root_filesystem.to_string_lossy()
-    ));
-    command.arg("--debug");
-    command.arg("--dhcp-no-bind");
-    command.args(["--port", "64172"]);
-    command.args(["--status-port", "64172"]);
+    command.arg("sh");
+    command.arg("-c");
+    command.arg(sh_input);
 
-    Ok(command.spawn().context("Failed to spawn pixiecore")?)
+    log::info!("Pixiecore may ask for your password. It needs root privledges to open sockets related to DHCP.");
+    let mut pixiecore = command
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("Failed to spawn pixiecore")?;
+
+    // We wait for the start signal before we continue the program.
+    let stderr = pixiecore
+        .stderr
+        .take()
+        .context("Failed to capture stderr output of pixiecore")?;
+    let mut reader = BufReader::new(stderr);
+
+    let mut line = String::new();
+    loop {
+        let length = reader
+            .read_line(&mut line)
+            .await
+            .context("Failed to read stderr line from pixiecore")?;
+
+        if length == 0 || line == "PIXIECORE START\n" {
+            break;
+        }
+
+        line.clear();
+    }
+
+    // The sudo call tends to leave the terminal in a bad state, so we're
+    // going to reset it to a sane state.
+    Command::new("stty").arg("sane").status().await.ok();
+    Ok(pixiecore)
 }
 
-async fn upload(context: &ProjectContext, host: &str) -> Result<Child> {
-    let top_level = context
-        .run_build(
-            host,
-            &format!(".#nixosConfigurations.{host}.config.system.build.toplevel"),
-        )
-        .await?
-        .canonicalize()
-        .context("Failed to canonicalize path to system top-level derivation")?;
-    let disko_script = context
-            .run_build(
-                host,
-                &format!(".#nixosConfigurations.{host}.config.system.build.diskoScript"),
-            )
-            .await.context("Failed to build disko script. Did you remember to include disko module and configuration?")?
-            .canonicalize()
-            .context("Failed to canonicalize path to disko script")?;
-
+async fn upload(top_level: &Path, disko_script: &Path, host: &str) -> Result<Child> {
     let mut command = Command::new("nixos-anywhere");
     command.arg("--store-paths");
     command.arg(disko_script);
     command.arg(top_level);
     command.arg(format!("root@{host}"));
+    command.kill_on_drop(true);
 
-    Ok(command
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("Failed to spawn nixos-anywhere")?)
+    Ok(command.spawn().context("Failed to spawn nixos-anywhere")?)
 }
 
-async fn upload_loop(context: &ProjectContext, host: &str) -> Result<()> {
+async fn upload_loop(top_level: &Path, disko_script: &Path, host: &str) -> Result<()> {
     loop {
         log::info!("Waiting to start upload");
         tokio::time::sleep(Duration::from_secs(5)).await;
 
         log::info!("Starting upload");
-        let mut upload = upload(context, host)
+        let mut upload = upload(top_level, disko_script, host)
             .await
             .context("Failed to start upload process")?;
 
@@ -122,15 +129,39 @@ pub async fn install_netboot<'a>(
         .run_against_hosts(
             |_list| Ok(()),
             async |host| {
+                let pxe_boot_directory = context
+                    .run_build(
+                        host,
+                        &format!(
+                            ".#nixosConfigurations.{host}.config.system.build.installer_netboot"
+                        ),
+                    )
+                    .await?
+                    .canonicalize()
+                    .context("Failed to canonicalize path to PXE boot dependencies")?;
+                let top_level = context
+                    .run_build(
+                        host,
+                        &format!(".#nixosConfigurations.{host}.config.system.build.toplevel"),
+                    )
+                    .await?
+                    .canonicalize()
+                    .context("Failed to canonicalize path to system top-level derivation")?;
+                let disko_script = context
+                        .run_build(
+                            host,
+                            &format!(".#nixosConfigurations.{host}.config.system.build.diskoScript"),
+                        )
+                        .await.context("Failed to build disko script. Did you remember to include disko module and configuration?")?
+                        .canonicalize()
+                        .context("Failed to canonicalize path to disko script")?;
 
-
-                let mut pixiecore = run_pixiecore(&context, host).await?;
+                let mut pixiecore = run_pixiecore(&pxe_boot_directory).await?;
 
                 log::info!("Hosting PXE boot for {host}, please boot that computer now.");
-                log::info!("Pixiecore may ask for your password. It needs root privledges to open sockets related to DHCP.");
                 log::info!("Press Ctrl-C to end PXE hosting session.");
 
-                let upload = upload_loop(&context, host);
+                let upload = upload_loop(&top_level, &disko_script, host);
 
                 tokio::select! {
                     result = upload => {
@@ -149,11 +180,18 @@ pub async fn install_netboot<'a>(
 
                 // We need to make sure pixiecore properly terminates.
                 if let Some(id) = pixiecore.id() {
-                    use nix::{unistd::Pid, sys::signal::{self, Signal}};
+                    use nix::{
+                        sys::signal::{self, Signal},
+                        unistd::Pid,
+                    };
 
-                    signal::kill(Pid::from_raw(id as i32), Signal::SIGTERM).context("Failed to kill pixiecore")?;
+                    signal::kill(Pid::from_raw(id as i32), Signal::SIGTERM)
+                        .context("Failed to kill pixiecore")?;
                 }
-                pixiecore.wait().await.context("Failed to wait for pixiecore to complete")?;
+                pixiecore
+                    .wait()
+                    .await
+                    .context("Failed to wait for pixiecore to complete")?;
                 log::info!("Pixiecore terminated.");
 
                 Ok(())
