@@ -118,7 +118,37 @@ pub struct InstallISO {
 /// image is DESTRUCTIVE to any machine it is deployed on, as it will overwrite any
 /// content on the target hard drive.
 #[argh(subcommand, name = "install-netboot")]
-pub struct InstallNetboot {}
+pub struct InstallNetboot {
+    #[argh(subcommand)]
+    pub steps: netboot::Steps,
+}
+
+pub mod netboot {
+    use super::*;
+
+    #[derive(FromArgs, PartialEq, Debug)]
+    #[argh(subcommand)]
+    pub enum Steps {
+        Both(Both),
+        Boot(Boot),
+        Install(Install),
+    }
+
+    #[derive(FromArgs, PartialEq, Debug)]
+    /// PXE boot the robot, and then install to it.
+    #[argh(subcommand, name = "both")]
+    pub struct Both {}
+
+    #[derive(FromArgs, PartialEq, Debug)]
+    /// PXE boot the robot.
+    #[argh(subcommand, name = "boot")]
+    pub struct Boot {}
+
+    #[derive(FromArgs, PartialEq, Debug)]
+    /// Install to a robot that has already been PXE booted.
+    #[argh(subcommand, name = "install")]
+    pub struct Install {}
+}
 
 #[derive(FromArgs, PartialEq, Debug)]
 /// Ssh into your robot's computer.
