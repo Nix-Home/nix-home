@@ -12,12 +12,19 @@ use tokio::{
 };
 
 async fn run_pixiecore(output_directory: &Path) -> Result<Child> {
-    let kernel = output_directory
-        .join("kernel/bzImage")
-        .canonicalize()
-        .context("Failed to canonacalize kernel path.")?
-        .to_string_lossy()
-        .to_string();
+    let kernel = {
+        let mut kernel = output_directory.join("kernel/bzImage");
+        if !kernel.exists() {
+            // Sometimes the kernel is not compressed.
+            kernel = output_directory.join("kernel/Image");
+        }
+
+        let kernel = kernel
+            .canonicalize()
+            .context("Failed to canonacalize kernel path.")?;
+
+        kernel.to_string_lossy().into_owned()
+    };
     let initrd = output_directory
         .join("netbootRamdisk/initrd")
         .canonicalize()
