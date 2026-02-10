@@ -283,7 +283,7 @@ impl ProjectContext {
     }
 
     async fn run_build(&self, host: &str, target: &str) -> Result<PathBuf> {
-        log::info!("Building '{}'", host);
+        log::info!("Building '{}'", target);
 
         let mut command = Command::new("nix");
         command.env("NIX_SSHOPTS", format!("-F {}", self.ssh_config_path));

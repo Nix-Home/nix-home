@@ -147,7 +147,11 @@ pub mod netboot {
     #[derive(FromArgs, PartialEq, Debug)]
     /// Install to a robot that has already been PXE booted.
     #[argh(subcommand, name = "install")]
-    pub struct Install {}
+    pub struct Install {
+        #[argh(option)]
+        /// override the default ssh destination (only works if deploying to a single host)
+        pub destination: Option<String>,
+    }
 }
 
 #[derive(FromArgs, PartialEq, Debug)]

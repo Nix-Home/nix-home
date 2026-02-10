@@ -126,6 +126,7 @@ async fn upload(top_level: &Path, disko_script: &Path, host: &str) -> Result<Chi
     command.arg(top_level);
     command.arg(format!("root@{host}"));
     command.kill_on_drop(true);
+    command.stdin(Stdio::inherit());
 
     Ok(command.spawn().context("Failed to spawn nixos-anywhere")?)
 }
@@ -233,7 +234,21 @@ pub async fn install_netboot<'a>(
         .context("Failed to initalize build")?;
 
     context
-        .run_against_hosts(|_list| Ok(()), async |host| {
+        .run_against_hosts(|list| {
+            if let arguments::netboot::Steps::Install(args) = &args.steps {
+                if args.destination.is_some() {
+                    if list.len() == 1 {
+                        Ok(())
+                    } else {
+                        bail!("Host name can only be overriden when deploying to a single host. Use a host filter to limit to a single host.")
+                    }
+                } else {
+                    Ok(())
+                }
+            } else {
+                Ok(())
+            }
+        }, async |host| {
             let pxe_boot_directory = context
                 .run_build(
                     host,
@@ -259,10 +274,12 @@ pub async fn install_netboot<'a>(
                                 .canonicalize()
                                 .context("Failed to canonicalize path to disko script")?;
 
-            match args.steps {
+            match &args.steps {
                 arguments::netboot::Steps::Both(_) => run_both(host, &pxe_boot_directory, &top_level, &disko_script).await?,
                 arguments::netboot::Steps::Boot(_) => solo_run_pixiecore(&pxe_boot_directory).await?,
-                arguments::netboot::Steps::Install(_) => solo_upload(&top_level, &disko_script, host).await?,
+                arguments::netboot::Steps::Install(install_args) => {
+                    solo_upload(&top_level, &disko_script, install_args.destination.as_ref().map(|v| v.as_str()).unwrap_or(host)).await?
+                },
             }
 
             Ok(())
