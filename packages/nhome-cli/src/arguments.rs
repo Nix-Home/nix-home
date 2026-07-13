@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use argh::FromArgs;
+use argh::{FromArgValue, FromArgs};
 
 #[derive(FromArgs, PartialEq, Debug)]
 /// Manages robot workspaces, deployment, and integration with Home Assistant.
@@ -58,9 +58,9 @@ pub enum DeployType {
 /// Build and deploy a project over ssh.
 #[argh(subcommand, name = "ssh")]
 pub struct SshDeploy {
-    #[argh(switch)]
-    /// makes the configuration the new boot default
-    pub switch: bool,
+    #[argh(positional, default = "Operation::default()")]
+    /// deployment operation: test (default), switch, boot
+    pub operation: Operation,
 
     /// do not trigger the auto-revert timer (this has a risk of locking you out of your robot if
     /// things go wrong)
@@ -70,6 +70,25 @@ pub struct SshDeploy {
     #[argh(option)]
     /// override the default ssh destination (only works if deploying to a single host)
     pub destination: Option<String>,
+}
+
+#[derive(FromArgValue, PartialEq, Debug, Clone, Copy)]
+pub enum Operation {
+    /// makes the configuration the new boot default and switches to it
+    Switch,
+
+    /// deploy and switch to the new configuration, but do not make it a boot entry so that
+    /// rebooting will undo the changes
+    Test,
+
+    /// makes the configuration the new boot default but do not switch to it until reboot
+    Boot,
+}
+
+impl Default for Operation {
+    fn default() -> Self {
+        Self::Test
+    }
 }
 
 #[derive(FromArgs, PartialEq, Debug)]
