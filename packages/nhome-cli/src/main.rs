@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+use arguments::Operation;
 use regex::Regex;
 use tokio::process::Command;
 
@@ -206,7 +207,7 @@ impl ProjectContext {
         &self,
         host: &str,
         hostname: &str,
-        switch: bool,
+        operation: Operation,
         enable_auto_revert: bool,
     ) -> Result<()> {
         log::info!("Deploying {host} to {hostname}");
@@ -243,12 +244,12 @@ impl ProjectContext {
         command.arg("--builders");
         command.arg(build_machine_list);
 
-        // Are we committing this as a boot configuration or just a test?
-        if switch {
-            command.arg("switch");
-        } else {
-            command.arg("test");
-        }
+        // What kind of operation are we doing?
+        match operation {
+            Operation::Switch => command.arg("switch"),
+            Operation::Test => command.arg("test"),
+            Operation::Boot => command.arg("boot"),
+        };
 
         // Configure target host.
         command.arg("--flake");
