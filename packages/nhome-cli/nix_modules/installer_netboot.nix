@@ -4,22 +4,37 @@ let
   installer_base = pkgs.callPackage ./installer_base.nix {};
 in
 {
-  options.installer_netboot = installer_base.options;
+  options = {
+    pxe-install-console = lib.mkOption {
+      type = lib.types.str;
+      default = "/dev/tty1";
+      description = "Terminal to output text to";
+    };
+    pxe-install-modules = lib.mkOption {
+      default = [];
+      description = "Additional modules for the netboot installer";
+    };
+  };
 
-  config = {
+  config =
+  let
+    super = config;
+  in {
     system.build.installer_netboot = let
       build = (evalConfig {
         system = pkgs.system;
         modules = [
           (import "${pkgs.path}/nixos/modules/installer/netboot/netboot-minimal.nix")
-          ({ pkgs, lib, ...}: {
+          ({config, pkgs, lib, ...}: {
             netboot.squashfsCompression = "zstd -Xcompression-level 6";
+
+            # Makes the console print to the main display.
+            services.journald.console = super.pxe-install-console;
+
+            # We need to set a system state version, so we'll just inherit it.
+            system.stateVersion = super.system.stateVersion;
           })
-	  (installer_base.installer_system_module {
-	    cfg = config.installer_netboot;
-	    payload_config = config;
-	  })
-        ];
+        ] ++ super.pxe-install-modules;
       }).config.system.build;
     in pkgs.runCommand "netboot" {} ''
         mkdir -p $out
