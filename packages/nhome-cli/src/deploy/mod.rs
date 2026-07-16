@@ -65,7 +65,7 @@ async fn deploy_ssh<'a>(
             context.deploy_ssh(
                 host,
                 &hostname,
-                args.switch,
+                args.operation,
                 !args.no_auto_revert
             ).await
         },
