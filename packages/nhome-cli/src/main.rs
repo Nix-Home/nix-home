@@ -177,6 +177,7 @@ impl ProjectContext {
 
     async fn get_hosts_list(&self) -> Result<Vec<String>> {
         let mut command = Command::new("nix");
+        command.current_dir(&self.project_root);
         command.args([
             "eval",
             "--raw",

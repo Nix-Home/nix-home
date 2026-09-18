@@ -30,6 +30,18 @@ Run `rhome deploy installer` from the root of any of the following example proje
 * [SSH Jumping](example_projects/ssh_jumping)
   * This will produce multiple installer images, one for each host within the robot.
 
+### LXC template
+
+Build a Proxmox VE LXC template container image (`tar.xz`) for each matching host (use `--hosts` to filter which hosts are built):
+
+```
+nhome deploy lxc-template
+```
+
+The host configuration should be container-oriented: no bootloader and no device-backed `fileSystems`. The image module sets `boot.isContainer`, enables sshd, and lets Proxmox manage the network. Import the resulting tarball into Proxmox with `pveam update <tarball>` or via the GUI.
+
+* [LXC](example_projects/lxc)
+
 ### SSH
 
 If your robot is already running and you can ssh into it, you can push updates to it. This is much faster and convenient than disk images or installers. These updates are typically deployed in test mode as well, meaning that rebooting the robot will revert the changes, mitigating risks of a bad deployment. (use the `--switch` flag to make an update persist between reboots)

@@ -52,6 +52,7 @@ pub enum DeployType {
     DiskImage(DiskImage),
     InstallerIso(InstallISO),
     Netboot(InstallNetboot),
+    LxcTemplate(LxcTemplate),
 }
 
 #[derive(FromArgs, PartialEq, Debug)]
@@ -107,6 +108,15 @@ pub struct DiskImage {
 /// content on the target hard drive.
 #[argh(subcommand, name = "install-iso")]
 pub struct InstallISO {
+    #[argh(option)]
+    /// override the default link path for the project
+    pub link_path: Option<PathBuf>,
+}
+
+#[derive(FromArgs, PartialEq, Debug)]
+/// Build an LXC template container image (tar.xz) for use with Proxmox VE.
+#[argh(subcommand, name = "lxc-template")]
+pub struct LxcTemplate {
     #[argh(option)]
     /// override the default link path for the project
     pub link_path: Option<PathBuf>,

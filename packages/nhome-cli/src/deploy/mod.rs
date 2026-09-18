@@ -32,6 +32,11 @@ pub async fn deploy(build_machines: Vec<String>, args: arguments::Deploy) -> Res
                 .await
                 .context("Failed to deploy")
         }
+        arguments::DeployType::LxcTemplate(lxc_args) => {
+            build_lxc_templates(build_machines, args.project_root, host_filter, lxc_args)
+                .await
+                .context("Failed to build LXC template")
+        }
     }
 }
 
@@ -139,6 +144,79 @@ async fn build_iso_installer(
                         &format!(".#nixosConfigurations.{host}.config.system.build.installer_iso"),
                     )
                     .await?;
+
+                Ok(())
+            },
+        )
+        .await?;
+
+    log::info!("Build successful.");
+
+    Ok(())
+}
+
+async fn build_lxc_templates(
+    build_machines: Vec<String>,
+    project_root: Option<PathBuf>,
+    host_filter: Option<&str>,
+    args: arguments::LxcTemplate,
+) -> Result<()> {
+    log::info!("Building LXC template images.");
+
+    let context = ProjectContext::load_project(
+        build_machines,
+        project_root,
+        host_filter,
+        args.link_path.as_ref().map(|p| p.as_path()),
+    )
+    .await
+    .context("Failed to initalize build")?;
+
+    context
+        .run_against_hosts(
+            |_hosts| Ok(()),
+            async |host| {
+                let output = context
+                    .run_build(
+                        host,
+                        &format!(".#nixosConfigurations.{host}.config.system.build.images.proxmox-lxc"),
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to build LXC template for host '{host}'. \
+                            `system.build.images` requires nixpkgs from NixOS 25.05 or newer."
+                        )
+                    })?;
+
+                let tarball_dir = output.join("tarball");
+                let mut read_dir = tokio::fs::read_dir(&tarball_dir)
+                    .await
+                    .with_context(|| format!("Failed to read tarball directory {tarball_dir:?}"))?;
+
+                let mut tarballs = Vec::new();
+                while let Some(entry) = read_dir
+                    .next_entry()
+                    .await
+                    .with_context(|| format!("Failed to read entry in {tarball_dir:?}"))?
+                {
+                    let path = entry.path();
+                    if path
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().ends_with(".tar.xz"))
+                    {
+                        tarballs.push(path);
+                    }
+                }
+
+                match tarballs.len() {
+                    1 => log::info!("LXC template for '{host}' located at: {:?}", tarballs[0]),
+                    0 => bail!("No `*.tar.xz` tarball found in {tarball_dir:?}"),
+                    _ => bail!(
+                        "Expected exactly one `*.tar.xz` tarball in {tarball_dir:?}, found {}",
+                        tarballs.len()
+                    ),
+                }
 
                 Ok(())
             },
