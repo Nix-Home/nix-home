@@ -49,6 +49,7 @@
           
 	      strictDeps = true;
             };
+          completionScript = ./completions/nhome.bash;
 	  in
 	    pkgs.runCommandLocal "nhome-cli" {
 	      nativeBuildInputs = [
@@ -59,6 +60,9 @@
               cp ${package}/bin/cli $out/bin/nhome
               wrapProgram $out/bin/nhome \
                 --prefix PATH : ${pkgs.nix}/bin:${pkgs.nixos-rebuild}/bin:${pkgs.openssh}/bin:${pkgs.pixiecore}/bin:${pkgs.nixos-anywhere}/bin:{}
+
+              mkdir -p $out/share/bash-completion/completions
+              install -m 0644 ${completionScript} $out/share/bash-completion/completions/nhome
 	    '';
       }
     );

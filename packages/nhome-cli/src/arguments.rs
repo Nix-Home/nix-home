@@ -22,6 +22,17 @@ pub enum SubCommand {
     Deploy(Deploy),
     Ssh(SshCommand),
     Firewall(firewall::Command),
+    Hosts(Hosts),
+}
+
+#[derive(FromArgs, PartialEq, Debug)]
+/// Internal: print the host names defined in the project's flake.nix, one per line.
+/// Used by the shell tab-completion script; not intended for interactive use.
+#[argh(subcommand, name = "__hosts")]
+pub struct Hosts {
+    #[argh(option)]
+    /// specify a directory to be used as the project root (defaults to the current directory)
+    pub project_root: Option<PathBuf>,
 }
 
 #[derive(FromArgs, PartialEq, Debug)]
