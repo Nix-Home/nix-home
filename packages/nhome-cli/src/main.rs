@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use arguments::Operation;
+use clap::{CommandFactory, Parser};
 use regex::Regex;
 use tokio::process::Command;
 
@@ -19,13 +20,25 @@ mod ssh;
 
 #[tokio::main]
 async fn main() {
-    let args = argh::from_env();
+    let args = arguments::RosAssistant::parse();
 
     colog::init();
 
     if let Err(error) = application(args).await {
         log::error!("Fatal error: {:?}", error);
     }
+}
+
+fn print_completions(args: arguments::Completions) -> Result<()> {
+    use clap_complete::{generate, Shell};
+
+    let shell = match args.shell {
+        arguments::CompletionShell::Bash => Shell::Bash,
+    };
+
+    let mut command = arguments::RosAssistant::command();
+    generate(shell, &mut command, "nhome", &mut std::io::stdout());
+    Ok(())
 }
 
 async fn application(args: arguments::RosAssistant) -> Result<()> {
@@ -45,6 +58,7 @@ async fn application(args: arguments::RosAssistant) -> Result<()> {
         }
         arguments::SubCommand::Firewall(firewall_args) => firewall(firewall_args).await,
         arguments::SubCommand::Hosts(hosts_args) => list_hosts(hosts_args).await,
+        arguments::SubCommand::Completions(completions_args) => print_completions(completions_args),
     }
 }
 

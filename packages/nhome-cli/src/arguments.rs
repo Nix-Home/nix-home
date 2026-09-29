@@ -1,90 +1,83 @@
 use std::path::PathBuf;
 
-use argh::{FromArgValue, FromArgs};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum, ValueHint};
 
-#[derive(FromArgs, PartialEq, Debug)]
+#[derive(Parser, PartialEq, Debug)]
+#[command(name = "nhome")]
 /// Manages robot workspaces, deployment, and integration with Home Assistant.
 pub struct RosAssistant {
-    #[argh(option, short = 'b')]
+    #[arg(short = 'b', long, action = ArgAction::Append)]
     /// specify a remote build machine to be used to build your project. This is especially useful for cross compiling.
     /// specify each machine as `--build-machine 'ssh://hostname x86_64-linux aarch64-linux'`, adjusting the hostname
     /// and supported architectures as needed.
     pub build_machine: Vec<String>,
 
-    #[argh(subcommand)]
+    #[command(subcommand)]
     pub subcommand: SubCommand,
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand)]
+#[derive(Subcommand, PartialEq, Debug)]
 pub enum SubCommand {
+    #[command(name = "new")]
     NewProject(NewProject),
     Deploy(Deploy),
     Ssh(SshCommand),
     Firewall(firewall::Command),
+    #[command(name = "__hosts", hide = true)]
     Hosts(Hosts),
+    #[command(name = "__completions", hide = true)]
+    Completions(Completions),
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
-/// Internal: print the host names defined in the project's flake.nix, one per line.
-/// Used by the shell tab-completion script; not intended for interactive use.
-#[argh(subcommand, name = "__hosts")]
-pub struct Hosts {
-    #[argh(option)]
-    /// specify a directory to be used as the project root (defaults to the current directory)
-    pub project_root: Option<PathBuf>,
-}
-
-#[derive(FromArgs, PartialEq, Debug)]
+#[derive(Args, PartialEq, Debug)]
 /// Create a new robot project.
-#[argh(subcommand, name = "new")]
 pub struct NewProject {}
 
-#[derive(FromArgs, PartialEq, Debug)]
+#[derive(Args, PartialEq, Debug)]
 /// Build and deploy a project.
-#[argh(subcommand, name = "deploy")]
 pub struct Deploy {
-    #[argh(option)]
+    #[arg(long)]
     /// restrict which hosts are deployed using a regex expression
     pub hosts: Option<String>,
 
-    #[argh(option)]
+    #[arg(long, value_hint = ValueHint::DirPath)]
     /// specify a directory to be used as the project root (defaults to the current directory)
     pub project_root: Option<PathBuf>,
 
-    #[argh(subcommand)]
+    #[command(subcommand)]
     pub deploy_type: DeployType,
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand)]
+#[derive(Subcommand, PartialEq, Debug)]
 pub enum DeployType {
     Ssh(SshDeploy),
+    #[command(name = "disk")]
     DiskImage(DiskImage),
+    #[command(name = "install-iso")]
     InstallerIso(InstallISO),
+    #[command(name = "install-netboot")]
     Netboot(InstallNetboot),
     LxcTemplate(LxcTemplate),
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
+#[derive(Args, PartialEq, Debug)]
 /// Build and deploy a project over ssh.
-#[argh(subcommand, name = "ssh")]
 pub struct SshDeploy {
-    #[argh(positional, default = "Operation::default()")]
+    #[arg(value_enum, default_value_t)]
     /// deployment operation: test (default), switch, boot
     pub operation: Operation,
 
     /// do not trigger the auto-revert timer (this has a risk of locking you out of your robot if
     /// things go wrong)
-    #[argh(switch)]
+    #[arg(long)]
     pub no_auto_revert: bool,
 
-    #[argh(option)]
+    #[arg(long)]
     /// override the default ssh destination (only works if deploying to a single host)
     pub destination: Option<String>,
 }
 
-#[derive(FromArgValue, PartialEq, Debug, Clone, Copy)]
+#[derive(ValueEnum, PartialEq, Debug, Clone, Copy)]
 pub enum Operation {
     /// makes the configuration the new boot default and switches to it
     Switch,
@@ -103,136 +96,171 @@ impl Default for Operation {
     }
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
+impl std::fmt::Display for Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Switch => "switch",
+            Self::Test => "test",
+            Self::Boot => "boot",
+        };
+        f.write_str(s)
+    }
+}
+
+#[derive(Args, PartialEq, Debug)]
 /// Build a project and create an initaial boot disk image for it.
-#[argh(subcommand, name = "disk")]
 pub struct DiskImage {
-    #[argh(option)]
+    #[arg(long, value_hint = ValueHint::DirPath)]
     /// override the default link path for the project
     pub link_path: Option<PathBuf>,
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
+#[derive(Args, PartialEq, Debug)]
 /// Build an ISO image for performing unattended installations of the disk image.
 /// This image can be written to a USB drive or burned to a CD/DVD. Note that this
 /// image is DESTRUCTIVE to any machine it is deployed on, as it will overwrite any
 /// content on the target hard drive.
-#[argh(subcommand, name = "install-iso")]
 pub struct InstallISO {
-    #[argh(option)]
+    #[arg(long, value_hint = ValueHint::DirPath)]
     /// override the default link path for the project
     pub link_path: Option<PathBuf>,
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
+#[derive(Args, PartialEq, Debug)]
 /// Build an LXC template container image (tar.xz) for use with Proxmox VE.
-#[argh(subcommand, name = "lxc-template")]
 pub struct LxcTemplate {
-    #[argh(option)]
+    #[arg(long, value_hint = ValueHint::DirPath)]
     /// override the default link path for the project
     pub link_path: Option<PathBuf>,
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
+#[derive(Args, PartialEq, Debug)]
 /// Build an ISO image for performing unattended installations of the disk image.
 /// This image can be written to a USB drive or burned to a CD/DVD. Note that this
 /// image is DESTRUCTIVE to any machine it is deployed on, as it will overwrite any
 /// content on the target hard drive.
-#[argh(subcommand, name = "install-netboot")]
 pub struct InstallNetboot {
-    #[argh(subcommand)]
+    #[command(subcommand)]
     pub steps: netboot::Steps,
 }
 
 pub mod netboot {
     use super::*;
 
-    #[derive(FromArgs, PartialEq, Debug)]
-    #[argh(subcommand)]
+    #[derive(Subcommand, PartialEq, Debug)]
     pub enum Steps {
         Both(Both),
         Boot(Boot),
         Install(Install),
     }
 
-    #[derive(FromArgs, PartialEq, Debug)]
+    #[derive(Args, PartialEq, Debug)]
     /// PXE boot the robot, and then install to it.
-    #[argh(subcommand, name = "both")]
     pub struct Both {}
 
-    #[derive(FromArgs, PartialEq, Debug)]
+    #[derive(Args, PartialEq, Debug)]
     /// PXE boot the robot.
-    #[argh(subcommand, name = "boot")]
     pub struct Boot {}
 
-    #[derive(FromArgs, PartialEq, Debug)]
+    #[derive(Args, PartialEq, Debug)]
     /// Install to a robot that has already been PXE booted.
-    #[argh(subcommand, name = "install")]
     pub struct Install {
-        #[argh(option)]
+        #[arg(long)]
         /// override the default ssh destination (only works if deploying to a single host)
         pub destination: Option<String>,
     }
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
+#[derive(Args, PartialEq, Debug)]
 /// Ssh into your robot's computer.
-#[argh(subcommand, name = "ssh")]
 pub struct SshCommand {
-    #[argh(option)]
+    #[arg(long, value_hint = ValueHint::DirPath)]
     /// specify a directory to be used as the project root (defaults to the current directory)
     pub project_root: Option<PathBuf>,
 
-    #[argh(positional)]
+    #[arg(value_hint = ValueHint::Other)]
     pub host: Option<String>,
 
-    #[argh(option, short = 'c')]
+    #[arg(short = 'c', long)]
     /// run a command on the host.
     pub command: Option<String>,
+}
+
+#[derive(Args, PartialEq, Debug)]
+/// List the host names of the project in the given (or current) directory, one per line.
+/// Internal subcommand used by the shell tab-completion script; not intended for humans.
+pub struct Hosts {
+    #[arg(long, value_hint = ValueHint::DirPath)]
+    /// specify a directory to be used as the project root (defaults to the current directory)
+    pub project_root: Option<PathBuf>,
+}
+
+#[derive(Args, PartialEq, Debug)]
+/// Print shell tab-completion scripts.
+/// Internal subcommand used to generate the shipped completion file; not intended for humans.
+pub struct Completions {
+    /// the shell to print completions for
+    #[arg(value_enum, default_value_t)]
+    pub shell: CompletionShell,
+}
+
+#[derive(ValueEnum, PartialEq, Debug, Clone, Copy)]
+pub enum CompletionShell {
+    Bash,
+}
+
+impl Default for CompletionShell {
+    fn default() -> Self {
+        Self::Bash
+    }
+}
+
+impl std::fmt::Display for CompletionShell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Bash => "bash",
+        };
+        f.write_str(s)
+    }
 }
 
 pub mod firewall {
     use super::*;
 
-    #[derive(FromArgs, PartialEq, Debug)]
+    #[derive(Args, PartialEq, Debug)]
     /// Manage the robot's firewalls.
-    #[argh(subcommand, name = "firewall")]
     pub struct Command {
-        #[argh(option)]
+        #[arg(long)]
         /// restrict which hosts are modified using a regex expression
         pub hosts: Option<String>,
 
-        #[argh(option)]
+        #[arg(long, value_hint = ValueHint::DirPath)]
         /// specify a directory to be used as the project root (defaults to the current directory)
         pub project_root: Option<PathBuf>,
 
-        #[argh(subcommand)]
+        #[command(subcommand)]
         pub subcommand: SubCommand,
     }
 
-    #[derive(FromArgs, PartialEq, Debug)]
-    #[argh(subcommand)]
+    #[derive(Subcommand, PartialEq, Debug)]
     pub enum SubCommand {
         Disable(Disable),
         Reset(Reset),
         Pierce(Pierce),
     }
 
-    #[derive(FromArgs, PartialEq, Debug)]
+    #[derive(Args, PartialEq, Debug)]
     /// Disable the firewalls.
-    #[argh(subcommand, name = "disable")]
     pub struct Disable {}
 
-    #[derive(FromArgs, PartialEq, Debug)]
+    #[derive(Args, PartialEq, Debug)]
     /// Reset the firewalls to their original state.
-    #[argh(subcommand, name = "reset")]
     pub struct Reset {}
 
-    #[derive(FromArgs, PartialEq, Debug)]
+    #[derive(Args, PartialEq, Debug)]
     /// Creates an opening in the firewalls just to your local system.
-    #[argh(subcommand, name = "pierce")]
     pub struct Pierce {
-        #[argh(option)]
+        #[arg(long, action = ArgAction::Append)]
         /// specify an IP address or host name to open the firewalls to. You can use a hostname instead of an IP address.
         /// All addresses that hostname resolves to will be used. Do not specify any hosts to assume the addresses of all non-loopback
         /// network interfaces of this computer.
