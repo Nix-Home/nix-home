@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use arguments::Operation;
+use clap::{CommandFactory, Parser};
 use regex::Regex;
 use tokio::process::Command;
 
@@ -19,13 +20,25 @@ mod ssh;
 
 #[tokio::main]
 async fn main() {
-    let args = argh::from_env();
+    let args = arguments::RosAssistant::parse();
 
     colog::init();
 
     if let Err(error) = application(args).await {
         log::error!("Fatal error: {:?}", error);
     }
+}
+
+fn print_completions(args: arguments::Completions) -> Result<()> {
+    use clap_complete::{generate, Shell};
+
+    let shell = match args.shell {
+        arguments::CompletionShell::Bash => Shell::Bash,
+    };
+
+    let mut command = arguments::RosAssistant::command();
+    generate(shell, &mut command, "nhome", &mut std::io::stdout());
+    Ok(())
 }
 
 async fn application(args: arguments::RosAssistant) -> Result<()> {
@@ -44,6 +57,64 @@ async fn application(args: arguments::RosAssistant) -> Result<()> {
             ssh::ssh(ssh_args).await.context("Failed to ssh to host")
         }
         arguments::SubCommand::Firewall(firewall_args) => firewall(firewall_args).await,
+        arguments::SubCommand::Hosts(hosts_args) => list_hosts(hosts_args).await,
+        arguments::SubCommand::Completions(completions_args) => print_completions(completions_args),
+    }
+}
+
+/// Lists the host names defined in a project. Used by the shell tab-completion
+/// script, so failures are reported on stderr and the exit status stays
+/// successful to keep the terminal quiet while typing.
+async fn list_hosts(args: arguments::Hosts) -> Result<()> {
+    let project_root = match args.project_root {
+        Some(root) => root,
+        None => std::env::current_dir().context("Failed to get current directory")?,
+    };
+
+    if !project_root.join("flake.nix").exists() {
+        return Ok(());
+    }
+
+    match nix_eval_hosts(&project_root).await {
+        Ok(hosts) => {
+            for host in hosts {
+                println!("{host}");
+            }
+            Ok(())
+        }
+        Err(error) => {
+            log::warn!("Failed to list hosts: {error:?}");
+            Ok(())
+        }
+    }
+}
+
+/// Runs `nix eval` against the project flake and returns the names of all
+/// defined NixOS configurations.
+async fn nix_eval_hosts(project_root: &Path) -> Result<Vec<String>> {
+    let mut command = Command::new("nix");
+    command.current_dir(project_root);
+    command.args([
+        "eval",
+        "--raw",
+        ".#nixosConfigurations",
+        "--apply",
+        "pkgs: builtins.concatStringsSep \" \" (builtins.attrNames pkgs)",
+    ]);
+
+    let result = command.output().await.context("Failed to run `nix eval`")?;
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    if result.status.success() {
+        if !result.stderr.is_empty() {
+            log::warn!("`nix eval` had stderr output: {}", stderr);
+        }
+
+        let output = String::from_utf8(result.stdout)
+            .context("`nix eval` output is not utf8 encoded text")?;
+
+        Ok(output.split_whitespace().map(|s| s.to_string()).collect())
+    } else {
+        bail!("`nix eval` returned status {}: {}", result.status, stderr);
     }
 }
 
@@ -176,31 +247,7 @@ impl ProjectContext {
     }
 
     async fn get_hosts_list(&self) -> Result<Vec<String>> {
-        let mut command = Command::new("nix");
-        command.current_dir(&self.project_root);
-        command.args([
-            "eval",
-            "--raw",
-            ".#nixosConfigurations",
-            "--apply",
-            "pkgs: builtins.concatStringsSep \" \" (builtins.attrNames pkgs)",
-        ]);
-
-        let result = command.output().await.context("Failed to run `nix eval`")?;
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        if result.status.success() {
-            if !result.stderr.is_empty() {
-                log::warn!("`nix eval` had stderr output: {}", stderr);
-            }
-
-            let output = String::from_utf8(result.stdout)
-                .context("`nix eval` output is not utf8 encoded text")?;
-
-            let hosts = output.split_whitespace();
-            Ok(hosts.map(|s| s.to_string()).collect())
-        } else {
-            bail!("`nix eval` returned status {}: {}", result.status, stderr);
-        }
+        nix_eval_hosts(&self.project_root).await
     }
 
     async fn deploy_ssh(

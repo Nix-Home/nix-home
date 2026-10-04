@@ -179,7 +179,9 @@ async fn build_lxc_templates(
                 let output = context
                     .run_build(
                         host,
-                        &format!(".#nixosConfigurations.{host}.config.system.build.images.proxmox-lxc"),
+                        &format!(
+                            ".#nixosConfigurations.{host}.config.system.build.images.proxmox-lxc"
+                        ),
                     )
                     .await
                     .with_context(|| {

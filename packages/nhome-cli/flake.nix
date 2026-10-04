@@ -49,6 +49,7 @@
           
 	      strictDeps = true;
             };
+          completionOverlay = ./completions/hosts-overlay.bash;
 	  in
 	    pkgs.runCommandLocal "nhome-cli" {
 	      nativeBuildInputs = [
@@ -59,6 +60,16 @@
               cp ${package}/bin/cli $out/bin/nhome
               wrapProgram $out/bin/nhome \
                 --prefix PATH : ${pkgs.nix}/bin:${pkgs.nixos-rebuild}/bin:${pkgs.openssh}/bin:${pkgs.pixiecore}/bin:${pkgs.nixos-anywhere}/bin:{}
+
+              # Generate the bash completion script from the command line
+              # definition at build time, rename the generated function so it
+              # can be wrapped by the dynamic host name overlay, and ship the
+              # result where NixOS bash-completion will auto-load it.
+              mkdir -p $out/share/bash-completion/completions $TMPDIR
+              ${package}/bin/cli __completions bash 2> /dev/null \
+                | sed 's/_nhome/_nhome_static/g' > $TMPDIR/nhome.bash
+              cat ${completionOverlay} >> $TMPDIR/nhome.bash
+              install -m 0644 $TMPDIR/nhome.bash $out/share/bash-completion/completions/nhome
 	    '';
       }
     );

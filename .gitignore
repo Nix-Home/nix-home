@@ -8,3 +8,6 @@ __pycache__
 # Nix outputs
 result
 .direnv
+
+# Opencode
+.opencode
