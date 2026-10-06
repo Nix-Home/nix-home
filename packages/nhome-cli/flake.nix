@@ -45,8 +45,17 @@
         packages.default =  with pkgs;
 	  let
 	    package = craneLib.buildPackage {
-              src = craneLib.cleanCargoSource ./.;
-          
+              # craneLib.cleanCargoSource only keeps cargo-relevant files (*.rs,
+              # *.toml, Cargo.toml/lock), but the CLI embeds src/status/probe.sh
+              # at compile time via include_str!, so keep it as well.
+              src = lib.cleanSourceWith {
+                src = lib.cleanSource ./.;
+                filter = path: type:
+                  (craneLib.filterCargoSources path type)
+                  || baseNameOf (toString path) == "probe.sh";
+                name = "nhome-cli-src";
+              };
+
 	      strictDeps = true;
             };
           completionOverlay = ./completions/hosts-overlay.bash;

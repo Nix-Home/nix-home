@@ -17,6 +17,7 @@ mod arguments;
 mod deploy;
 mod firewall;
 mod ssh;
+mod status;
 
 #[tokio::main]
 async fn main() {
@@ -57,6 +58,9 @@ async fn application(args: arguments::RosAssistant) -> Result<()> {
             ssh::ssh(ssh_args).await.context("Failed to ssh to host")
         }
         arguments::SubCommand::Firewall(firewall_args) => firewall(firewall_args).await,
+        arguments::SubCommand::Status(status_args) => {
+            std::process::exit(status::status(status_args).await)
+        }
         arguments::SubCommand::Hosts(hosts_args) => list_hosts(hosts_args).await,
         arguments::SubCommand::Completions(completions_args) => print_completions(completions_args),
     }

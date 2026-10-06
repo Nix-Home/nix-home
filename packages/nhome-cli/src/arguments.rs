@@ -23,6 +23,7 @@ pub enum SubCommand {
     Deploy(Deploy),
     Ssh(SshCommand),
     Firewall(firewall::Command),
+    Status(Status),
     #[command(name = "__hosts", hide = true)]
     Hosts(Hosts),
     #[command(name = "__completions", hide = true)]
@@ -58,6 +59,23 @@ pub enum DeployType {
     #[command(name = "install-netboot")]
     Netboot(InstallNetboot),
     LxcTemplate(LxcTemplate),
+}
+
+#[derive(Args, PartialEq, Debug)]
+/// Quick state of the fleet: for each host, shows the systemd state and
+/// whether the running system is the one the bootloader will boot next.
+/// Bootloader types other than systemd-boot are reported as "unsupported
+/// bootloader" and do not affect the exit code. Exit codes: 0 if all hosts
+/// are healthy, 1 if some hosts are unreachable or out of sync, 3 if no host
+/// status could be obtained at all (exit code 2 is reserved for clap).
+pub struct Status {
+    #[arg(long)]
+    /// restrict which hosts are checked using a regex expression
+    pub hosts: Option<String>,
+
+    #[arg(long, value_hint = ValueHint::DirPath)]
+    /// specify a directory to be used as the project root (defaults to the current directory)
+    pub project_root: Option<PathBuf>,
 }
 
 #[derive(Args, PartialEq, Debug)]
