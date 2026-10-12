@@ -76,6 +76,11 @@ pub struct Status {
     #[arg(long, value_hint = ValueHint::DirPath)]
     /// specify a directory to be used as the project root (defaults to the current directory)
     pub project_root: Option<PathBuf>,
+
+    #[arg(long)]
+    /// print the table directly instead of opening the interactive scrollable view (this is
+    /// done automatically when the output is not a terminal, e.g. when redirecting to a file)
+    pub plain: bool,
 }
 
 #[derive(Args, PartialEq, Debug)]

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -9,6 +10,8 @@ use tokio::process::Command;
 
 use crate::arguments;
 use crate::nix_eval_hosts;
+
+mod tui;
 
 const PROBE_SCRIPT: &str = include_str!("probe.sh");
 
@@ -216,6 +219,63 @@ fn verdict_text(verdict: &Verdict) -> &'static str {
     }
 }
 
+fn is_healthy(verdict_cell: &str) -> bool {
+    matches!(
+        verdict_cell,
+        "in sync" | "no bootloader (container)" | "unsupported bootloader"
+    )
+}
+
+fn is_unprobed(verdict_cell: &str) -> bool {
+    matches!(verdict_cell, "unreachable" | "probe failed")
+}
+
+/// The interactive view needs a terminal to read keys from and one to draw
+/// into; anything else (pipes, files, CI) gets plain printing instead.
+fn is_interactive() -> bool {
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
+/// The fleet table: a header row, one row per host and precomputed column
+/// widths, rendered with 2-space separators.
+struct Table {
+    header: Vec<String>,
+    rows: Vec<Vec<String>>,
+    widths: Vec<usize>,
+}
+
+impl Table {
+    fn new(header: Vec<String>, rows: Vec<Vec<String>>) -> Self {
+        let column_count = header.len();
+        let widths = (0..column_count)
+            .map(|col| {
+                header[col]
+                    .len()
+                    .max(rows.iter().map(|row| row[col].len()).max().unwrap_or(0))
+            })
+            .collect();
+        Self { header, rows, widths }
+    }
+
+    pub(crate) fn render_row(cells: &[String], widths: &[usize]) -> String {
+        cells
+            .iter()
+            .enumerate()
+            .map(|(i, cell)| format!("{cell:<w$}", w = widths[i]))
+            .collect::<Vec<_>>()
+            .join("  ")
+    }
+
+    /// Prints the table with aligned columns; this is what ends up on stdout
+    /// when the interactive view is not used.
+    fn print_plain(&self) {
+        println!("{}", Self::render_row(&self.header, &self.widths));
+        for row in &self.rows {
+            println!("{}", Self::render_row(row, &self.widths));
+        }
+    }
+}
+
 /// Returns the process exit code: 0 if all hosts are healthy, 1 if some hosts
 /// are unhealthy but at least one host could be probed, 3 if no host status
 /// could be obtained at all.
@@ -288,12 +348,12 @@ async fn run_status(args: arguments::Status) -> Result<i32> {
     }
 
     // Build the display rows: (host, systemd state, running, boot, verdict).
-    let mut rows: Vec<[String; 5]> = Vec::with_capacity(hosts.len());
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(hosts.len());
     for (host, result) in hosts.iter().zip(results.into_iter()) {
         match result {
             Some(HostProbe::Probed(probe)) => {
                 let verdict = verdict(&probe);
-                rows.push([
+                rows.push(vec![
                     host.clone(),
                     probe.state.clone(),
                     generation_cell(&probe.current, probe.current_gen),
@@ -304,14 +364,14 @@ async fn run_status(args: arguments::Status) -> Result<i32> {
                     verdict_text(&verdict).to_string(),
                 ]);
             }
-            Some(HostProbe::Unreachable(error)) => rows.push([
+            Some(HostProbe::Unreachable(error)) => rows.push(vec![
                 host.clone(),
                 format!("unreachable ({error})"),
                 "-".to_string(),
                 "-".to_string(),
                 "unreachable".to_string(),
             ]),
-            None => rows.push([
+            None => rows.push(vec![
                 host.clone(),
                 "unreachable".to_string(),
                 "-".to_string(),
@@ -321,45 +381,25 @@ async fn run_status(args: arguments::Status) -> Result<i32> {
         }
     }
 
-    // Print the table with aligned columns.
-    let header = ["host", "systemd", "running", "boot", "verdict"];
-    let widths: Vec<usize> = (0..5)
-        .map(|col| {
-            header[col]
-                .len()
-                .max(rows.iter().map(|row| row[col].len()).max().unwrap_or(0))
-        })
-        .collect();
+    let header = vec![
+        "host".to_string(),
+        "systemd".to_string(),
+        "running".to_string(),
+        "boot".to_string(),
+        "verdict".to_string(),
+    ];
+    let table = Table::new(header, rows);
 
-    println!(
-        "{}",
-        header
-            .iter()
-            .enumerate()
-            .map(|(i, h)| format!("{h:<w$}", w = widths[i]))
-            .collect::<Vec<_>>()
-            .join("  ")
-    );
-    for row in &rows {
-        println!(
-            "{}",
-            row.iter()
-                .enumerate()
-                .map(|(i, cell)| format!("{cell:<w$}", w = widths[i]))
-                .collect::<Vec<_>>()
-                .join("  ")
-        );
+    if args.plain || !is_interactive() {
+        table.print_plain();
+    } else if let Err(error) = tui::launch(&table) {
+        log::warn!("Interactive view unavailable ({error}); printing the table instead.");
+        table.print_plain();
     }
 
-    let total = rows.len();
-    let healthy = |row: &&[String; 5]| {
-        matches!(
-            row[4].as_str(),
-            "in sync" | "no bootloader (container)" | "unsupported bootloader"
-        )
-    };
-    let unhealthy = rows.iter().filter(|row| !healthy(row)).count();
-    let unsupported = rows
+    let total = table.rows.len();
+    let unhealthy = table.rows.iter().filter(|row| !is_healthy(&row[4])).count();
+    let unsupported = table.rows
         .iter()
         .filter(|row| row[4] == "unsupported bootloader")
         .count();
@@ -375,9 +415,10 @@ async fn run_status(args: arguments::Status) -> Result<i32> {
         );
     }
 
-    let probed = rows
+    let probed = table
+        .rows
         .iter()
-        .filter(|row| !matches!(row[4].as_str(), "unreachable" | "probe failed"))
+        .filter(|row| !is_unprobed(&row[4]))
         .count();
     if probed == 0 {
         Ok(3)
