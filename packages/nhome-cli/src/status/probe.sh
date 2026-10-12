@@ -72,3 +72,29 @@ fi
 if [ "$boot" != "none" ] && gen=$(gen_for "$boot"); then
     printf 'BOOT_GEN %s\n' "$gen"
 fi
+
+# 6. The kernel currently running, and the version of the current system
+#    generation's kernel. NixOS points /run/current-system/kernel at the
+#    store path of the generation's kernel image, whose name embeds the
+#    version as "...-linux-<version>". A mismatch means the host is running
+#    an older kernel and needs a reboot. Containers run the host's kernel, so
+#    there is nothing meaningful to compare there.
+kernel_running=$(uname -r 2>/dev/null)
+[ -n "$kernel_running" ] || kernel_running=unknown
+printf 'KERNEL_RUNNING %s\n' "$kernel_running"
+
+kernel_gen=""
+if [ -z "$container" ]; then
+    image=$(readlink /run/current-system/kernel 2>/dev/null)
+    case $image in
+        *-linux-*)
+            v=${image##*-linux-}
+            v=${v%%/*}
+            case $v in
+                [0-9]*) kernel_gen=$v ;;
+            esac
+            ;;
+    esac
+fi
+[ -n "$kernel_gen" ] || kernel_gen=unknown
+printf 'KERNEL_GENERATION %s\n' "$kernel_gen"

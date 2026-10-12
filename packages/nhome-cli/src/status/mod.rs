@@ -35,6 +35,54 @@ struct Probe {
     container: Option<String>,
     current_gen: Option<u32>,
     boot_gen: Option<u32>,
+    kernel_running: String,
+    kernel_generation: String,
+}
+
+/// Whether the running kernel is the one the current system generation
+/// expects.
+#[derive(Debug, Clone, PartialEq)]
+enum KernelStatus {
+    /// The running kernel matches the current generation's kernel.
+    Ok,
+    /// The running kernel differs; a reboot is needed to apply the new one.
+    Stale { running: String, generation: String },
+    /// The running or generation kernel version could not be determined
+    /// (e.g. containers, exotic kernel package names).
+    Unknown,
+}
+
+fn kernel_status(probe: &Probe) -> KernelStatus {
+    let running = probe.kernel_running.as_str();
+    let generation = probe.kernel_generation.as_str();
+    if running.is_empty() || running == "unknown" || generation.is_empty() || generation == "unknown"
+    {
+        return KernelStatus::Unknown;
+    }
+    if running == generation {
+        KernelStatus::Ok
+    } else {
+        KernelStatus::Stale {
+            running: running.to_string(),
+            generation: generation.to_string(),
+        }
+    }
+}
+
+fn kernel_cell(status: &KernelStatus) -> String {
+    match status {
+        KernelStatus::Ok => "ok".to_string(),
+        KernelStatus::Stale { running, generation } => {
+            format!("reboot needed ({running} -> {generation})")
+        }
+        KernelStatus::Unknown => "-".to_string(),
+    }
+}
+
+/// A stale kernel is attention-worthy in the same sense as a drifted boot
+/// default: something was deployed but has not taken effect yet.
+fn is_kernel_stale(cell: &str) -> bool {
+    cell.starts_with("reboot needed")
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +138,12 @@ fn parse_probe_output(output: &str) -> Result<Probe> {
     let state = fields.get("STATE").context("Probe output is missing STATE")?;
     let current = fields.get("CURRENT").context("Probe output is missing CURRENT")?;
     let boot_raw = fields.get("BOOT").context("Probe output is missing BOOT")?;
+    let kernel_running = fields
+        .get("KERNEL_RUNNING")
+        .context("Probe output is missing KERNEL_RUNNING")?;
+    let kernel_generation = fields
+        .get("KERNEL_GENERATION")
+        .context("Probe output is missing KERNEL_GENERATION")?;
 
     let boot = match boot_raw.as_str() {
         "none" => BootTarget::None,
@@ -107,6 +161,8 @@ fn parse_probe_output(output: &str) -> Result<Probe> {
             .cloned(),
         current_gen: fields.get("CURRENT_GEN").and_then(|v| v.parse().ok()),
         boot_gen: fields.get("BOOT_GEN").and_then(|v| v.parse().ok()),
+        kernel_running: kernel_running.clone(),
+        kernel_generation: kernel_generation.clone(),
     })
 }
 
@@ -347,7 +403,8 @@ async fn run_status(args: arguments::Status) -> Result<i32> {
         }
     }
 
-    // Build the display rows: (host, systemd state, running, boot, verdict).
+    // Build the display rows: (host, systemd state, running, boot, kernel,
+    // verdict).
     let mut rows: Vec<Vec<String>> = Vec::with_capacity(hosts.len());
     for (host, result) in hosts.iter().zip(results.into_iter()) {
         match result {
@@ -361,6 +418,7 @@ async fn run_status(args: arguments::Status) -> Result<i32> {
                         BootTarget::System(path) => generation_cell(path, probe.boot_gen),
                         BootTarget::None => "-".to_string(),
                     },
+                    kernel_cell(&kernel_status(&probe)),
                     verdict_text(&verdict).to_string(),
                 ]);
             }
@@ -369,11 +427,13 @@ async fn run_status(args: arguments::Status) -> Result<i32> {
                 format!("unreachable ({error})"),
                 "-".to_string(),
                 "-".to_string(),
+                "-".to_string(),
                 "unreachable".to_string(),
             ]),
             None => rows.push(vec![
                 host.clone(),
                 "unreachable".to_string(),
+                "-".to_string(),
                 "-".to_string(),
                 "-".to_string(),
                 "probe failed".to_string(),
@@ -386,6 +446,7 @@ async fn run_status(args: arguments::Status) -> Result<i32> {
         "systemd".to_string(),
         "running".to_string(),
         "boot".to_string(),
+        "kernel".to_string(),
         "verdict".to_string(),
     ];
     let table = Table::new(header, rows);
@@ -398,10 +459,15 @@ async fn run_status(args: arguments::Status) -> Result<i32> {
     }
 
     let total = table.rows.len();
-    let unhealthy = table.rows.iter().filter(|row| !is_healthy(&row[4])).count();
-    let unsupported = table.rows
+    let unhealthy = table
+        .rows
         .iter()
-        .filter(|row| row[4] == "unsupported bootloader")
+        .filter(|row| !is_healthy(&row[5]) || is_kernel_stale(&row[4]))
+        .count();
+    let unsupported = table
+        .rows
+        .iter()
+        .filter(|row| row[5] == "unsupported bootloader")
         .count();
 
     if unhealthy > 0 {
@@ -418,7 +484,7 @@ async fn run_status(args: arguments::Status) -> Result<i32> {
     let probed = table
         .rows
         .iter()
-        .filter(|row| !is_unprobed(&row[4]))
+        .filter(|row| !is_unprobed(&row[5]))
         .count();
     if probed == 0 {
         Ok(3)
@@ -440,7 +506,9 @@ mod tests {
              BOOT {boot}\n\
              CONTAINER {container}\n\
              CURRENT_GEN 14\n\
-             BOOT_GEN 14\n"
+             BOOT_GEN 14\n\
+             KERNEL_RUNNING 6.18.49\n\
+             KERNEL_GENERATION 6.18.49\n"
         )
     }
 
@@ -465,7 +533,11 @@ mod tests {
 
     #[test]
     fn parse_probe_output_accepts_missing_optional_fields() {
-        let output = "STATE degraded\nCURRENT /nix/store/aaaa-nixos-system-test-x\nBOOT none\n";
+        let output = "STATE degraded\n\
+             CURRENT /nix/store/aaaa-nixos-system-test-x\n\
+             BOOT none\n\
+             KERNEL_RUNNING 6.18.49\n\
+             KERNEL_GENERATION 6.18.49\n";
         let probe = parse_probe_output(output).expect("expected minimal output to parse");
 
         assert_eq!(probe.state, "degraded");
@@ -510,7 +582,11 @@ mod tests {
 
     #[test]
     fn parse_probe_output_treats_none_container_as_absent() {
-        let output = "STATE running\nCURRENT /nix/store/aaaa-nixos-system-test-x\nBOOT none\nCONTAINER none\n";
+        let output = "STATE running\n\
+             CURRENT /nix/store/aaaa-nixos-system-test-x\n\
+             BOOT none\nCONTAINER none\n\
+             KERNEL_RUNNING 6.18.49\n\
+             KERNEL_GENERATION unknown\n";
         let probe = parse_probe_output(output).expect("expected output to parse");
         assert_eq!(probe.container, None);
         assert_eq!(verdict(&probe), Verdict::UnsupportedBootloader);
@@ -525,9 +601,58 @@ mod tests {
 
     #[test]
     fn verdict_reports_undetermined_when_current_system_is_unknown() {
-        let output = "STATE running\nCURRENT unknown\nBOOT /nix/store/aaaa-nixos-system-test-26.05.abc\n";
-        let probe = parse_probe_output(output).unwrap();
+        let output = "STATE running\n\
+             CURRENT unknown\n\
+             BOOT /nix/store/aaaa-nixos-system-test-26.05.abc\n\
+             KERNEL_RUNNING 6.18.49\n\
+             KERNEL_GENERATION 6.18.49\n";
+        let probe = parse_probe_output(&output).unwrap();
         assert_eq!(verdict(&probe), Verdict::Undetermined);
+    }
+
+    #[test]
+    fn kernel_status_reports_ok_when_versions_match() {
+        let probe = parse_probe_output(&sample_output("/nix/store/aaaa-nixos-system-test-26.05.abc", ""))
+            .unwrap();
+        assert_eq!(kernel_status(&probe), KernelStatus::Ok);
+        assert_eq!(kernel_cell(&KernelStatus::Ok), "ok");
+    }
+
+    #[test]
+    fn kernel_status_reports_stale_when_versions_differ() {
+        let output = sample_output("/nix/store/aaaa-nixos-system-test-26.05.abc", "")
+            .replace("KERNEL_RUNNING 6.18.49", "KERNEL_RUNNING 7.2.3")
+            .replace("KERNEL_GENERATION 6.18.49", "KERNEL_GENERATION 7.2.9");
+        let probe = parse_probe_output(&output).unwrap();
+
+        assert_eq!(
+            kernel_status(&probe),
+            KernelStatus::Stale {
+                running: "7.2.3".to_string(),
+                generation: "7.2.9".to_string()
+            }
+        );
+        let cell = kernel_cell(&kernel_status(&probe));
+        assert_eq!(cell, "reboot needed (7.2.3 -> 7.2.9)");
+        assert!(is_kernel_stale(&cell));
+    }
+
+    #[test]
+    fn kernel_status_reports_unknown_when_version_missing() {
+        let output = sample_output("/nix/store/aaaa-nixos-system-test-26.05.abc", "")
+            .replace("KERNEL_GENERATION 6.18.49", "KERNEL_GENERATION unknown");
+        let probe = parse_probe_output(&output).unwrap();
+
+        assert_eq!(kernel_status(&probe), KernelStatus::Unknown);
+        assert!(!is_kernel_stale(&kernel_cell(&KernelStatus::Unknown)));
+    }
+
+    #[test]
+    fn parse_probe_output_rejects_missing_kernel_fields() {
+        let output = "STATE running\nCURRENT /nix/store/x\nBOOT none\nKERNEL_GENERATION 6.18.49\n";
+        assert!(parse_probe_output(output).is_err());
+        let output = "STATE running\nCURRENT /nix/store/x\nBOOT none\nKERNEL_RUNNING 6.18.49\n";
+        assert!(parse_probe_output(output).is_err());
     }
 
     #[test]
@@ -583,7 +708,14 @@ mod tests {
         );
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        for key in ["STATE", "CURRENT", "BOOT", "CONTAINER"] {
+        for key in [
+            "STATE",
+            "CURRENT",
+            "BOOT",
+            "CONTAINER",
+            "KERNEL_RUNNING",
+            "KERNEL_GENERATION",
+        ] {
             assert!(
                 stdout.lines().any(|line| line.starts_with(&format!("{key} "))),
                 "missing {key} line in:\n{stdout}"
@@ -648,8 +780,8 @@ mod tests {
 
             let verdict = verdict(&probe);
             println!(
-                "{host}: state={} current={} boot={:?} verdict={verdict:?}",
-                probe.state, probe.current, probe.boot
+                "{host}: state={} current={} boot={:?} kernel={:?} verdict={verdict:?}",
+                probe.state, probe.current, probe.boot, kernel_status(&probe)
             );
 
             assert!(
