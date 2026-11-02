@@ -11,6 +11,24 @@ use tokio::{
     process::{Child, Command},
 };
 
+/// Resolve a program name to an absolute path, searching the PATH we inherited.
+///
+/// Anything we hand to `sudo` cannot be named by bare word. sudo discards the
+/// caller's PATH and substitutes `secure_path` from /etc/sudoers, which lists
+/// only the system directories -- a Nix store path can never appear on it, so
+/// `sudo sh -c "pixiecore ..."` fails with exit 127 and no output.
+///
+/// Our own wrapper already puts every tool we need on *our* PATH, so resolve
+/// the absolute path on this side of the sudo boundary and pass that across.
+fn resolve_on_path(program: &str) -> Result<PathBuf> {
+    let path = std::env::var_os("PATH").context("PATH is not set")?;
+
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(program))
+        .find(|candidate| candidate.is_file())
+        .with_context(|| format!("Could not find `{program}` on PATH"))
+}
+
 async fn run_pixiecore(output_directory: &Path) -> Result<Child> {
     let kernel = {
         let mut kernel = output_directory.join("kernel/bzImage");
@@ -38,8 +56,13 @@ async fn run_pixiecore(output_directory: &Path) -> Result<Child> {
         .to_string_lossy()
         .to_string();
 
+    // Absolute path, not a bare word: see resolve_on_path above. sudo replaces
+    // PATH with secure_path, so `pixiecore` alone is unresolvable from here.
+    let pixiecore = resolve_on_path("pixiecore")?;
+    let pixiecore = pixiecore.display();
+
     let sh_input =
-        format!("printf 'PIXIECORE START\\n' >&2; pixiecore boot {kernel} {initrd} --cmdline 'init={root_filesystem} loglevel=4' --debug --dhcp-no-bind --port 64172 --status-port 64172");
+        format!("printf 'PIXIECORE START\\n' >&2; {pixiecore} boot {kernel} {initrd} --cmdline 'init={root_filesystem} loglevel=4' --debug --dhcp-no-bind --port 64172 --status-port 64172");
 
     let mut command = Command::new("sudo");
     command.arg("sh");
@@ -104,8 +127,10 @@ async fn solo_run_pixiecore(pxe_boot_directory: &Path) -> Result<()> {
 
     tokio::select! {
         result = pixiecore.wait() => {
-            log::warn!("Pixiecore terminated unexpectedly");
-            result.context("Pixiecore failed")?;
+            // Report the status: a shell that could not find pixiecore exits
+            // 127, which otherwise looks identical to pixiecore crashing.
+            let status = result.context("Pixiecore failed")?;
+            log::warn!("Pixiecore terminated unexpectedly ({status})");
         }
         // Wait for ctrl C.
         result = tokio::signal::ctrl_c() => {
@@ -120,7 +145,12 @@ async fn solo_run_pixiecore(pxe_boot_directory: &Path) -> Result<()> {
 }
 
 async fn upload(top_level: &Path, disko_script: &Path, host: &str) -> Result<Child> {
-    let mut command = Command::new("nixos-anywhere");
+    // Resolved rather than named, for the same reason as pixiecore. This call
+    // is not behind sudo today, so a bare word would in fact work -- but it is
+    // one refactor away from being, and the failure mode is silent.
+    let nixos_anywhere = resolve_on_path("nixos-anywhere")?;
+
+    let mut command = Command::new(nixos_anywhere);
     command.arg("--store-paths");
     command.arg(disko_script);
     command.arg(top_level);
@@ -208,8 +238,10 @@ async fn run_both(
             result.context("Failed to upload configuration to target")?;
         }
         result = pixiecore.wait() => {
-            log::warn!("Pixiecore terminated unexpectedly");
-            result.context("Pixiecore failed")?;
+            // Report the status: a shell that could not find pixiecore exits
+            // 127, which otherwise looks identical to pixiecore crashing.
+            let status = result.context("Pixiecore failed")?;
+            log::warn!("Pixiecore terminated unexpectedly ({status})");
         }
         // Wait for ctrl C.
         result = tokio::signal::ctrl_c() => {
